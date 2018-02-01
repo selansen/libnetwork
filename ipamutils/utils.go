@@ -2,6 +2,7 @@
 package ipamutils
 
 import (
+	"fmt"
 	"net"
 	"sync"
 )
@@ -13,11 +14,22 @@ var (
 	// PredefinedGranularNetworks contains a list of 64K IPv4 private networks with host size 8
 	// (10.x.x.x/24) which do not overlap with the networks in `PredefinedBroadNetworks`
 	PredefinedGranularNetworks []*net.IPNet
-
-	initNetworksOnce sync.Once
+	initNetworksOnce           sync.Once
 )
 
-// InitNetworks initializes the pre-defined networks used by the built-in IP allocator
+// PredefinedPools represent a set of address pools with prefix length Size.
+// Each pool in the set is derived from the Base pool. Base is to be passed
+// in CIDR format. The Scope field can be "local" or "global", and says
+// whether the address pool is to be used for local or global scope networks.
+// Example: a Base "10.10.0.0/16 with Size 24 will define the set of 256
+// 10.10.[0-255].0/24 address pools
+type PredefinedPools struct {
+	Base string `json:"base"`
+	Size int    `json:"size"`
+}
+
+// InitNetworks initializes the local predefined address pools
+// with the default values.
 func InitNetworks() {
 	initNetworksOnce.Do(func() {
 		PredefinedBroadNetworks = initBroadPredefinedNetworks()
@@ -47,4 +59,69 @@ func initGranularPredefinedNetworks() []*net.IPNet {
 		}
 	}
 	return pl
+}
+
+// InitAddressPools allows to initialize the local and global scope predefined
+// address pools to the desired values. It fails is invalid input is passed
+// or if the predefined pools were already initialized.
+func InitAddressPools(list []*PredefinedPools) error {
+	localPools := make([]*net.IPNet, 0, len(list))
+	done := false
+
+	for _, p := range list {
+		if p == nil {
+			continue
+		}
+		_, b, err := net.ParseCIDR(p.Base)
+		if err != nil {
+			return fmt.Errorf("invalid base pool %q: %v", p.Base, err)
+		}
+		ones, _ := b.Mask.Size()
+		if p.Size <= 0 || p.Size < ones {
+			return fmt.Errorf("invalid pools size: %d", p.Size)
+		}
+		localPools = append(localPools, initPools(p.Size, b)...)
+	}
+	if localPools == nil {
+		localPools = initBroadPredefinedNetworks()
+	}
+	initNetworksOnce.Do(func() {
+		PredefinedBroadNetworks = localPools
+		done = true
+	})
+	if !done {
+		return fmt.Errorf("predefined address pools are already initialized")
+	}
+	return nil
+}
+
+func initPools(size int, base *net.IPNet) []*net.IPNet {
+	one, bits := base.Mask.Size()
+	mask := net.CIDRMask(size, bits)
+	n := 1 << uint(size-one)
+	s := uint(bits - size)
+	list := make([]*net.IPNet, 0, n)
+
+	for i := 0; i < n; i++ {
+		ip := copyIP(base.IP)
+		addIntToIP(ip, uint(i<<s))
+		list = append(list, &net.IPNet{IP: ip, Mask: mask})
+	}
+
+	return list
+}
+
+func copyIP(from net.IP) net.IP {
+	ip := make([]byte, len(from))
+	for i := 0; i < len(ip); i++ {
+		ip[i] = from[i]
+	}
+	return ip
+}
+
+func addIntToIP(array []byte, ordinal uint) {
+	for i := len(array) - 1; i >= 0; i-- {
+		array[i] |= (byte)(ordinal & 0xff)
+		ordinal >>= 8
+	}
 }
