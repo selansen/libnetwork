@@ -959,7 +959,7 @@ func (n *network) delete(force bool) error {
 
 	if len(n.loadBalancerIP) != 0 {
 		endpoints := n.Endpoints()
-		if force || len(endpoints) == 1 {
+		if force || (len(endpoints) == 1 && !n.ingress) {
 			n.deleteLoadBalancerSandbox()
 		}
 		//Reload the network from the store to update the epcnt.
@@ -2056,6 +2056,7 @@ func (c *controller) getConfigNetwork(name string) (*network, error) {
 }
 
 func (n *network) createLoadBalancerSandbox() error {
+	var err error
 	sandboxName := n.name + "-sbox"
 	sbOptions := []SandboxOption{}
 	if n.ingress {
@@ -2090,10 +2091,12 @@ func (n *network) createLoadBalancerSandbox() error {
 		}
 	}()
 
-	if err := ep.Join(sb, nil); err != nil {
+	err = ep.Join(sb, nil)
+	if err != nil {
 		return err
 	}
-	return sb.EnableService()
+	err = sb.EnableService()
+	return err
 }
 
 func (n *network) deleteLoadBalancerSandbox() {
